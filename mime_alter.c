@@ -2010,7 +2010,7 @@ int AM_add_disclaimer_insert_html( 	struct AM_disclaimer_details *dd, FFGET_FILE
 		if((dd->boundary_found == 1) && (strncmp(boundary, line, boundary_length) == 0)) {
 
 			DAM LOGGER_log("%s:%d:AM_add_disclaimer_insert_html: End of boundary reached before html disclamer was added...",FL);
-			if (glb.force_for_bad_html == 1)
+			if ((glb.force_for_bad_html == 1) && (dd->html_inserted == 0))
 			{
 				DAM LOGGER_log("%s:%d:Forcing insertion of html disclaimer into non valid html body...",FL);
 
