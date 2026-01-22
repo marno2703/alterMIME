@@ -277,7 +277,7 @@ static int AM_segment_is_ascii(FFGET_FILE *f, long start_pos)
 	return is_ascii;
 }
 
-static char *AM_normalize_crlf(const char *in)
+static char *AM_normalize_lf(const char *in)
 {
 	size_t in_len;
 	size_t out_cap;
@@ -294,10 +294,8 @@ static char *AM_normalize_crlf(const char *in)
 	for (i = 0; i < in_len; i++) {
 		if (in[i] == '\r') {
 			if (i + 1 < in_len && in[i + 1] == '\n') i++;
-			out[out_len++] = '\r';
 			out[out_len++] = '\n';
 		} else if (in[i] == '\n') {
-			out[out_len++] = '\r';
 			out[out_len++] = '\n';
 		} else {
 			out[out_len++] = in[i];
@@ -387,7 +385,7 @@ static int AM_insert_qp_disclaimer_plain( FFGET_FILE *f, FILE *newf, struct AM_d
 		else snprintf(combined, total_size, "%s%s", body, disc);
 	}
 
-	normalized = AM_normalize_crlf(combined);
+	normalized = AM_normalize_lf(combined);
 	if (normalized == NULL) {
 		free(combined);
 		if (disc_alloc) free(disc);
@@ -405,7 +403,7 @@ static int AM_insert_qp_disclaimer_plain( FFGET_FILE *f, FILE *newf, struct AM_d
 		return -1;
 	}
 
-	qp_encode(qp_data, qp_size, normalized, strlen(normalized), "\r\n");
+	qp_encode(qp_data, qp_size, normalized, strlen(normalized), "\n");
 	fprintf(newf, "%s", qp_data);
 	dd->text_inserted = 1;
 
