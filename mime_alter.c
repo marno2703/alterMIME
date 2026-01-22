@@ -1059,7 +1059,7 @@ Changes:
 char *AM_adapt_linebreak( char *in, char *lb ) {
 
 	char safe[]="\r\n";
-	char *newblock;
+	char *newblock = NULL;
 
 
 	if (in == NULL) return NULL;
@@ -1092,6 +1092,7 @@ char *AM_adapt_linebreak( char *in, char *lb ) {
 		}
 	}
 
+	if (newblock == NULL) return in;
 	return newblock;
 }
 
