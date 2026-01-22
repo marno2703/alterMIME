@@ -2749,6 +2749,25 @@ int AM_add_disclaimer_no_boudary( FFGET_FILE *f, FILE *newf, struct AM_disclaime
 			if ((dd->force_qp == 1) && (dd->content_encoding != _CTRANS_ENCODING_QP)) {
 				DAM LOGGER_log("%s:%d:AM_add_disclaimer_no_boudary:DEBUG: Forcing QP encoding for plain-text body",FL);
 				if (AM_insert_qp_disclaimer_plain( f, newf, dd, 0 ) != 0) return -1;
+			} else if (dd->content_encoding == _CTRANS_ENCODING_QP) {
+				char *qp_data;
+				size_t qp_data_size;
+
+				/** Read to the end of the file **/
+				if (glb.pretext_insert == 0) AM_read_to_boundary( f, newf, line, AM_1K_BUFFER_SIZE );
+
+				/** Insert a blank line before the disclaimer **/
+				fprintf(newf, "%s", glb.ldelimeter);
+
+				DAM LOGGER_log("%s:%d:AM_add_disclaimer_no_boudary:DEBUG: QP-encoding disclaimer for existing QP body",FL);
+				qp_data_size = strlen(dd->disclaimer_text_plain) * 3 + 3;
+				qp_data = malloc(qp_data_size);
+				if (qp_data == NULL) return -1;
+				qp_encode(qp_data, qp_data_size, dd->disclaimer_text_plain, strlen(dd->disclaimer_text_plain), glb.ldelimeter);
+				fprintf(newf, "%s", qp_data);
+				free(qp_data);
+				dd->text_inserted = 1;
+				if (glb.pretext_insert == 1) AM_read_to_boundary( f, newf, line, AM_1K_BUFFER_SIZE );
 			} else {
 				/** Read to the end of the file **/
 				if (glb.pretext_insert == 0) AM_read_to_boundary( f, newf, line, AM_1K_BUFFER_SIZE );
