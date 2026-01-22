@@ -83,7 +83,7 @@ int qp_encode( char *out, size_t out_size, char *in, size_t in_size, char *line_
 {
 	int result = 0;
 	size_t out_remaining;
-	char *linestart, *lineend, *p, *op;
+	char *linestart, *lineend, *next_line, *p, *op;
 	char paragraph[100], *pp;
 	size_t pp_remaining = 100;
 	char *input_data_limit = in +in_size;
@@ -117,9 +117,10 @@ int qp_encode( char *out, size_t out_size, char *in, size_t in_size, char *line_
 			if (lineend == NULL) {
 				QPD LOGGER_log("%s:%d:qp_encode:DEBUG: No CRLF found, setting line-end to end of the input",FL);
 			  	lineend = in +in_size;
+				next_line = lineend;
 			} else {
 				QPD LOGGER_log("%s:%d:qp_encode:DEBUG: INPUT STRING: '%s'", FL, linestart); 
-				lineend += strlen(line_terminator);
+				next_line = lineend + strlen(line_terminator);
 			}
 
 		}
@@ -177,6 +178,8 @@ int qp_encode( char *out, size_t out_size, char *in, size_t in_size, char *line_
 		snprintf(op, out_remaining, "%s\r\n", paragraph);
 		op += (strlen(paragraph) +2);
 		out_remaining -= (strlen(paragraph) +2);
+
+		lineend = next_line;
 
 	} while ((lineend < input_data_limit)&&(*lineend != '\0')); /** for each line **/
 
@@ -257,4 +260,3 @@ int qp_encode_from_file( char *fname )
 
 
 /** END of qpe.c **/
-
