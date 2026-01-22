@@ -381,8 +381,8 @@ static int AM_insert_qp_disclaimer_plain( FFGET_FILE *f, FILE *newf, struct AM_d
 		if (need_sep) snprintf(combined, total_size, "%s%s%s", disc, sep, body);
 		else snprintf(combined, total_size, "%s%s", disc, body);
 	} else {
-		if (need_sep) snprintf(combined, total_size, "%s%s%s", body, sep, disc);
-		else snprintf(combined, total_size, "%s%s", body, disc);
+		if (need_sep) snprintf(combined, total_size, "%s%s%s%s", body, sep, sep, disc);
+		else snprintf(combined, total_size, "%s%s%s", body, sep, disc);
 	}
 
 	normalized = AM_normalize_lf(combined);
