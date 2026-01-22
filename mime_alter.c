@@ -29,6 +29,354 @@
 #define DAM if (glb.debug > 0)
 #define VAM if (glb.verbose > 0)
 
+static struct AM_globals glb;
+char *AM_adapt_linebreak( char *in, char *lb );
+
+static int AM_has_non_ascii(const char *s)
+{
+	if (s == NULL) return 0;
+	while (*s) {
+		if ((unsigned char)*s >= 0x80) return 1;
+		s++;
+	}
+	return 0;
+}
+
+static int AM_strcase_equal(const char *a, const char *b)
+{
+	if (a == NULL || b == NULL) return 0;
+	while (*a && *b) {
+		if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
+		a++;
+		b++;
+	}
+	return (*a == '\0' && *b == '\0');
+}
+
+static const char *AM_detect_linebreak(const char *headers)
+{
+	if (headers != NULL && strstr(headers, "\r\n") != NULL) return "\r\n";
+	return "\n";
+}
+
+static char *AM_find_header_line(char *headers, const char *header_name)
+{
+	char *p = headers;
+	size_t name_len = strlen(header_name);
+
+	if (headers == NULL || header_name == NULL) return NULL;
+
+	while ((p = PLD_strstr(p, (char *)header_name, 1)) != NULL) {
+		if (p == headers || p[-1] == '\n' || p[-1] == '\r') return p;
+		p += name_len;
+	}
+
+	return NULL;
+}
+
+static char *AM_find_linebreak(char *p, int *lb_len)
+{
+	char *lb;
+
+	if (p == NULL) return NULL;
+	lb = strpbrk(p, "\r\n");
+	if (lb == NULL) return NULL;
+
+	*lb_len = 1;
+	if (lb[0] == '\r' && lb[1] == '\n') *lb_len = 2;
+	else if (lb[0] == '\n' && lb[1] == '\r') *lb_len = 2;
+
+	return lb;
+}
+
+static char *AM_find_header_end_linebreak(char *line_start)
+{
+	char *p = line_start;
+	char *lb = NULL;
+	int lb_len = 0;
+
+	while (p != NULL) {
+		lb = AM_find_linebreak(p, &lb_len);
+		if (lb == NULL) return NULL;
+
+		if (lb[lb_len] != ' ' && lb[lb_len] != '\t') return lb;
+		p = lb + lb_len;
+	}
+
+	return NULL;
+}
+
+static char *AM_headers_replace_header_value(char *headers, const char *header_name, const char *new_value)
+{
+	char *line_start = AM_find_header_line(headers, header_name);
+	char *value_start;
+	char *value_end;
+	char *new_headers;
+	size_t new_len;
+	size_t prefix_len;
+
+	if (line_start == NULL) return NULL;
+
+	value_start = line_start + strlen(header_name);
+	while (*value_start == ' ' || *value_start == '\t') value_start++;
+	value_end = value_start;
+	while (*value_end && *value_end != '\r' && *value_end != '\n') value_end++;
+
+	new_len = strlen(headers) - (size_t)(value_end - value_start) + strlen(new_value) + 1;
+	new_headers = malloc(new_len);
+	if (new_headers == NULL) return headers;
+
+	prefix_len = (size_t)(value_start - headers);
+	memcpy(new_headers, headers, prefix_len);
+	memcpy(new_headers + prefix_len, new_value, strlen(new_value));
+	strcpy(new_headers + prefix_len + strlen(new_value), value_end);
+
+	return new_headers;
+}
+
+static char *AM_headers_insert_before_blank_line(char *headers, const char *line)
+{
+	const char *lb = AM_detect_linebreak(headers);
+	char *blank;
+	char *new_headers;
+	size_t new_len;
+	size_t prefix_len;
+
+	if (headers == NULL || line == NULL) return headers;
+
+	if (strcmp(lb, "\r\n") == 0) blank = strstr(headers, "\r\n\r\n");
+	else blank = strstr(headers, "\n\n");
+
+	if (blank == NULL) {
+		new_len = strlen(headers) + strlen(lb) + strlen(line) + strlen(lb) + 1;
+		new_headers = malloc(new_len);
+		if (new_headers == NULL) return headers;
+		snprintf(new_headers, new_len, "%s%s%s%s", headers, lb, line, lb);
+		return new_headers;
+	}
+
+	prefix_len = (size_t)(blank - headers);
+	new_len = strlen(headers) + strlen(line) + 1;
+	new_headers = malloc(new_len);
+	if (new_headers == NULL) return headers;
+
+	memcpy(new_headers, headers, prefix_len);
+	memcpy(new_headers + prefix_len, line, strlen(line));
+	strcpy(new_headers + prefix_len + strlen(line), blank);
+
+	return new_headers;
+}
+
+static char *AM_headers_replace_or_add_charset(char *headers, const char *charset)
+{
+	char *ct_start;
+	char *ct_end;
+	char *p;
+	char *eq;
+	char *val_start;
+	char *val_end;
+	char *new_headers;
+	size_t new_len;
+	size_t prefix_len;
+	size_t charset_len;
+	char insert_buf[256];
+
+	if (headers == NULL || charset == NULL) return headers;
+
+	ct_start = AM_find_header_line(headers, "content-type:");
+	if (ct_start == NULL) return headers;
+
+	ct_end = AM_find_header_end_linebreak(ct_start);
+	if (ct_end == NULL) return headers;
+
+	p = ct_start;
+	while ((p = PLD_strstr(p, "charset", 1)) != NULL) {
+		if (p >= ct_end) break;
+		eq = strchr(p, '=');
+		if (eq == NULL || eq >= ct_end) {
+			p += strlen("charset");
+			continue;
+		}
+
+		val_start = eq + 1;
+		while (val_start < ct_end && (*val_start == ' ' || *val_start == '\t')) val_start++;
+		if (val_start >= ct_end) break;
+
+		if (*val_start == '"' || *val_start == '\'') val_start++;
+		val_end = val_start;
+		while (val_end < ct_end && *val_end != ';' && *val_end != '\r' && *val_end != '\n' && *val_end != '"' && *val_end != '\'') val_end++;
+
+		charset_len = strlen(charset);
+		new_len = strlen(headers) - (size_t)(val_end - val_start) + charset_len + 1;
+		new_headers = malloc(new_len);
+		if (new_headers == NULL) return headers;
+
+		prefix_len = (size_t)(val_start - headers);
+		memcpy(new_headers, headers, prefix_len);
+		memcpy(new_headers + prefix_len, charset, charset_len);
+		strcpy(new_headers + prefix_len + charset_len, val_end);
+
+		return new_headers;
+	}
+
+	snprintf(insert_buf, sizeof(insert_buf), "; charset=\"%s\"", charset);
+
+	new_len = strlen(headers) + strlen(insert_buf) + 1;
+	new_headers = malloc(new_len);
+	if (new_headers == NULL) return headers;
+
+	prefix_len = (size_t)(ct_end - headers);
+	memcpy(new_headers, headers, (size_t)(ct_end - headers));
+	memcpy(new_headers + prefix_len, insert_buf, strlen(insert_buf));
+	strcpy(new_headers + prefix_len + strlen(insert_buf), ct_end);
+
+	return new_headers;
+}
+
+static char *AM_headers_replace_or_add_cte(char *headers, const char *cte)
+{
+	char *new_headers;
+	char line[128];
+
+	if (headers == NULL || cte == NULL) return headers;
+
+	new_headers = AM_headers_replace_header_value(headers, "content-transfer-encoding:", cte);
+	if (new_headers != NULL) return new_headers;
+
+	snprintf(line, sizeof(line), "Content-Transfer-Encoding: %s", cte);
+	return AM_headers_insert_before_blank_line(headers, line);
+}
+
+static int AM_segment_is_ascii(FFGET_FILE *f, long start_pos)
+{
+	char line[AM_1K_BUFFER_SIZE+1];
+	int is_ascii = 1;
+
+	if (f == NULL) return 0;
+
+	while (FFGET_fgets(line, sizeof(line), f)) {
+		size_t len = strlen(line);
+		size_t i;
+
+		for (i = 0; i < len; i++) {
+			if ((unsigned char)line[i] >= 0x80) {
+				is_ascii = 0;
+				break;
+			}
+		}
+
+		if (!is_ascii) break;
+		if (BS_cmp(line, len) == 1) break;
+	}
+
+	f->FILEEND = 0;
+	f->FFEOF = 0;
+	f->ungetcset = 0;
+	FFGET_fseek(f, start_pos, SEEK_SET);
+
+	return is_ascii;
+}
+
+static int AM_insert_qp_disclaimer_plain( FFGET_FILE *f, FILE *newf, struct AM_disclaimer_details *dd, int stop_on_boundary )
+{
+	char line[AM_1K_BUFFER_SIZE+1];
+	char boundary_line[AM_1K_BUFFER_SIZE+1] = "";
+	char *body = NULL;
+	size_t body_len = 0;
+	char *disc;
+	int disc_alloc = 0;
+	const char *sep = glb.ldelimeter;
+	size_t sep_len = strlen(sep);
+	int boundary_hit = 0;
+	int need_sep = 1;
+	size_t total_size;
+	char *combined = NULL;
+	size_t qp_size;
+	char *qp_data = NULL;
+
+	while (FFGET_fgets(line, sizeof(line), f)) {
+		size_t len = strlen(line);
+
+		if (stop_on_boundary && BS_cmp(line, len) == 1) {
+			snprintf(boundary_line, sizeof(boundary_line), "%s", line);
+			boundary_hit = 1;
+			break;
+		}
+
+		if (len > 0) {
+			char *tmp = realloc(body, body_len + len + 1);
+			if (tmp == NULL) {
+				if (body) free(body);
+				return -1;
+			}
+			body = tmp;
+			memcpy(body + body_len, line, len);
+			body_len += len;
+			body[body_len] = '\0';
+		}
+	}
+
+	if (body == NULL) {
+		body = strdup("");
+		body_len = 0;
+	}
+
+	disc = AM_adapt_linebreak(dd->disclaimer_text_plain, glb.ldelimeter);
+	if (disc == NULL) {
+		free(body);
+		return -1;
+	}
+	disc_alloc = (disc != dd->disclaimer_text_plain);
+
+	if (glb.pretext_insert == 1) {
+		size_t disc_len = strlen(disc);
+		if (disc_len >= sep_len && strncmp(disc + disc_len - sep_len, sep, sep_len) == 0) {
+			need_sep = 0;
+		}
+	} else {
+		if (body_len >= sep_len && strncmp(body + body_len - sep_len, sep, sep_len) == 0) {
+			need_sep = 0;
+		}
+	}
+
+	total_size = body_len + strlen(disc) + (need_sep ? sep_len : 0) + 1;
+	combined = malloc(total_size);
+	if (combined == NULL) {
+		if (disc_alloc) free(disc);
+		free(body);
+		return -1;
+	}
+
+	if (glb.pretext_insert == 1) {
+		if (need_sep) snprintf(combined, total_size, "%s%s%s", disc, sep, body);
+		else snprintf(combined, total_size, "%s%s", disc, body);
+	} else {
+		if (need_sep) snprintf(combined, total_size, "%s%s%s", body, sep, disc);
+		else snprintf(combined, total_size, "%s%s", body, disc);
+	}
+
+	qp_size = strlen(combined) * 3 + 3;
+	qp_data = malloc(qp_size);
+	if (qp_data == NULL) {
+		free(combined);
+		if (disc_alloc) free(disc);
+		free(body);
+		return -1;
+	}
+
+	qp_encode(qp_data, qp_size, combined, strlen(combined), glb.ldelimeter);
+	fprintf(newf, "%s", qp_data);
+	dd->text_inserted = 1;
+
+	if (boundary_hit) fprintf(newf, "%s", boundary_line);
+
+	free(qp_data);
+	free(combined);
+	if (disc_alloc) free(disc);
+	free(body);
+
+	return 0;
+}
 /* Globals */
 unsigned int altermime_status_flags; // Status flags
 
@@ -59,11 +407,6 @@ static unsigned char b64[256]={
 		128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128,\
 		128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128,  128 \
 };
-
-
-static struct AM_globals glb;
-
-
 
 
 /*-----------------------------------------------------------------\
@@ -1300,11 +1643,19 @@ Errors:
 int AM_read_headers(struct AM_disclaimer_details *dd, FFGET_FILE *f, FILE *newf )
 {
 	struct MIMEH_header_info hinfo;
+	char *original_ptr = NULL;
+	char *header_ptr = NULL;
+	char *headers_to_write = NULL;
+	char *tmp_headers = NULL;
+	size_t sl;
+	size_t bc;
+	int result;
 
 	DAM LOGGER_log("%s:%d:AM_read_headers:DEBUG: Starting to read headers", FL );
 
 	dd->isfile = 0;
 	dd->ishtml = 0;
+	dd->force_qp = 0;
 
 	memset( &hinfo, '\0', sizeof(struct MIMEH_header_info));
 
@@ -1312,13 +1663,34 @@ int AM_read_headers(struct AM_disclaimer_details *dd, FFGET_FILE *f, FILE *newf 
 
 	if (FFGET_feof(f) != 0) return -1;
 
-	//	MIMEH_set_headers_save( newf ); // 20040309-2243:PLD
 	MIMEH_set_doubleCR_save(0);
 	MIMEH_set_header_longsearch(0); /** Turn off qmail searching, is not applicable here **/
-	MIMEH_set_headers_original_save_to_file( newf );
-	MIMEH_parse_headers( f, &hinfo );
-
 	MIMEH_set_headers_original_save_to_file( NULL );
+	MIMEH_set_headers_save_original(1);
+
+	result = MIMEH_headers_get( &hinfo, f );
+	if (result != 0) {
+		MIMEH_headers_cleanup();
+		MIMEH_set_headers_save_original(0);
+		return -1;
+	}
+
+	original_ptr = MIMEH_get_headers_original_ptr();
+	header_ptr = MIMEH_get_headers_ptr();
+	if (original_ptr == NULL || header_ptr == NULL) {
+		MIMEH_headers_cleanup();
+		MIMEH_set_headers_save_original(0);
+		return -1;
+	}
+
+	result = MIMEH_headers_process( &hinfo, header_ptr );
+	if (result != 0) {
+		MIMEH_headers_cleanup();
+		MIMEH_set_headers_save_original(0);
+		return -1;
+	}
+
+	MIMEH_set_headers_save_original(0);
 	MIMEH_set_doubleCR_save(1);
 	MIMEH_set_headers_nosave();
 
@@ -1373,8 +1745,44 @@ int AM_read_headers(struct AM_disclaimer_details *dd, FFGET_FILE *f, FILE *newf 
 	if (hinfo.content_type == _CTYPE_MULTIPART_SIGNED)
 	{
 		DAM LOGGER_log("%s:%d:AM_read_headers:DEBUG: Email is signed, return SIGNED_EMAIL",FL);
+		MIMEH_headers_cleanup();
 		return AM_RETURN_SIGNED_EMAIL;
 	}
+
+	headers_to_write = original_ptr;
+	if ((dd->text_inserted == 0)
+			&& (dd->content_type == _CTYPE_TEXT_PLAIN)
+			&& (dd->isfile == 0)
+			&& AM_has_non_ascii(dd->disclaimer_text_plain)
+			&& (dd->content_encoding != _CTRANS_ENCODING_B64)
+			&& (dd->content_encoding != _CTRANS_ENCODING_UUENCODE)
+			&& (dd->content_encoding != _CTRANS_ENCODING_BINARY)
+			&& AM_segment_is_ascii(f, dd->segment_start))
+	{
+		if (!AM_strcase_equal(hinfo.charset, "utf-8")) {
+			tmp_headers = AM_headers_replace_or_add_charset(headers_to_write, "utf-8");
+			if (tmp_headers != headers_to_write) {
+				headers_to_write = tmp_headers;
+			}
+		}
+
+		if (dd->content_encoding != _CTRANS_ENCODING_QP) {
+			dd->force_qp = 1;
+			tmp_headers = AM_headers_replace_or_add_cte(headers_to_write, "quoted-printable");
+			if (tmp_headers != headers_to_write) {
+				if (headers_to_write != original_ptr) free(headers_to_write);
+				headers_to_write = tmp_headers;
+			}
+		}
+	}
+
+	sl = strlen(headers_to_write);
+	bc = fwrite( headers_to_write, sizeof(char), sl, newf );
+	if (bc != sl) LOGGER_log("%s:%d:AM_read_headers:ERROR: Wrote %d bytes instead of %d", FL, bc, sl);
+
+	if (headers_to_write != original_ptr) free(headers_to_write);
+
+	MIMEH_headers_cleanup();
 
 	DAM LOGGER_log("%s:%d:AM_read_headers:DEBUG: Exit ( Header read section ).\n\t-- isfile=%d ishtml=%d boundaryfound=%d\n\n", FL, dd->isfile, dd->ishtml, dd->boundary_found );
 
@@ -2297,16 +2705,21 @@ int AM_add_disclaimer_no_boudary( FFGET_FILE *f, FILE *newf, struct AM_disclaime
 			//		and append the disclaimer to the end.
 
 			DAM LOGGER_log("%s:%d:AM_add_disclaimer_insert_html:DEBUG: Seeking to the end of the file for plain-text insertion...",FL);
-			/** Read to the end of the file **/
-			if (glb.pretext_insert == 0) AM_read_to_boundary( f, newf, line, AM_1K_BUFFER_SIZE );
+			if ((dd->force_qp == 1) && (dd->content_encoding != _CTRANS_ENCODING_QP)) {
+				DAM LOGGER_log("%s:%d:AM_add_disclaimer_no_boudary:DEBUG: Forcing QP encoding for plain-text body",FL);
+				if (AM_insert_qp_disclaimer_plain( f, newf, dd, 0 ) != 0) return -1;
+			} else {
+				/** Read to the end of the file **/
+				if (glb.pretext_insert == 0) AM_read_to_boundary( f, newf, line, AM_1K_BUFFER_SIZE );
 
-			DAM LOGGER_log("%s:%d:AM_add_disclaimer_no_boudary:DEBUG: Disclaimer before conversion '%s'",FL,dd->disclaimer_text_plain);
-			p = AM_adapt_linebreak(dd->disclaimer_text_plain, glb.ldelimeter); // 200811061459:PLD: converts text linebreaks to appropriate format
-			DAM LOGGER_log("%s:%d:AM_add_disclaimer_no_boudary:DEBUG: After conversion '%s'",FL,p);
-			fprintf(newf,"%s%s",p, glb.ldelimeter); 
-			dd->text_inserted = 1;
-			DAM LOGGER_log("%s:%d:AM_add_disclaimer_no_boudary:DEBUG: Disclaimer now written to file",FL);
-			if (glb.pretext_insert == 1) AM_read_to_boundary( f, newf, line, AM_1K_BUFFER_SIZE );
+				DAM LOGGER_log("%s:%d:AM_add_disclaimer_no_boudary:DEBUG: Disclaimer before conversion '%s'",FL,dd->disclaimer_text_plain);
+				p = AM_adapt_linebreak(dd->disclaimer_text_plain, glb.ldelimeter); // 200811061459:PLD: converts text linebreaks to appropriate format
+				DAM LOGGER_log("%s:%d:AM_add_disclaimer_no_boudary:DEBUG: After conversion '%s'",FL,p);
+				fprintf(newf,"%s%s",p, glb.ldelimeter);
+				dd->text_inserted = 1;
+				DAM LOGGER_log("%s:%d:AM_add_disclaimer_no_boudary:DEBUG: Disclaimer now written to file",FL);
+				if (glb.pretext_insert == 1) AM_read_to_boundary( f, newf, line, AM_1K_BUFFER_SIZE );
+			}
 			break;
 	}
 
@@ -2405,6 +2818,12 @@ int AM_insert_disclaimer_into_segment( FFGET_FILE *f, FILE *newf, struct AM_disc
 			&& (dd->isfile == 0) \
 		)
 	{
+		if ((dd->force_qp == 1) && (dd->content_encoding != _CTRANS_ENCODING_QP)) {
+			DAM LOGGER_log("%s:%d:AM_insert_disclaimer_into_segment:DEBUG: Forcing QP encoding for plain-text segment",FL);
+			if (AM_insert_qp_disclaimer_plain( f, newf, dd, 1 ) != 0) return -1;
+			return 0;
+		}
+
 		DAM LOGGER_log("%s:%d:AM_insert_disclaimer_into_segment:DEBUG: Conditions right to insert disclaimer\n",FL);
 		DAM LOGGER_log("%s:%d:AM_insert_disclaimer_into_segment:DEBUG: Reading first segment looking for boundary line\n",FL);
 
@@ -2628,6 +3047,7 @@ int AM_add_disclaimer( char *mpackname )
 	dd.text_inserted = 0;
 	dd.html_inserted = 0;
 	dd.b64_inserted = 0;
+	dd.force_qp = 0;
 
 
 	VAM LOGGER_log("Attempting to add disclaimer");
@@ -4264,5 +4684,3 @@ int AM_attachment_insert( char *fname, char *insert_as_fname, char *cid, int enc
 	return 0;
 }
 //-----------------------------------END----
-
-

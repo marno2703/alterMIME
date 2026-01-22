@@ -45,6 +45,7 @@ struct AM_disclaimer_details {
 	int text_inserted;
 	int html_inserted;
 	int b64_inserted;
+	int force_qp;
 
 	//
 
