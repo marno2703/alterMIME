@@ -277,6 +277,37 @@ static int AM_segment_is_ascii(FFGET_FILE *f, long start_pos)
 	return is_ascii;
 }
 
+static char *AM_normalize_crlf(const char *in)
+{
+	size_t in_len;
+	size_t out_cap;
+	size_t i;
+	size_t out_len = 0;
+	char *out;
+
+	if (in == NULL) return NULL;
+	in_len = strlen(in);
+	out_cap = in_len * 2 + 1;
+	out = malloc(out_cap);
+	if (out == NULL) return NULL;
+
+	for (i = 0; i < in_len; i++) {
+		if (in[i] == '\r') {
+			if (i + 1 < in_len && in[i + 1] == '\n') i++;
+			out[out_len++] = '\r';
+			out[out_len++] = '\n';
+		} else if (in[i] == '\n') {
+			out[out_len++] = '\r';
+			out[out_len++] = '\n';
+		} else {
+			out[out_len++] = in[i];
+		}
+	}
+
+	out[out_len] = '\0';
+	return out;
+}
+
 static int AM_insert_qp_disclaimer_plain( FFGET_FILE *f, FILE *newf, struct AM_disclaimer_details *dd, int stop_on_boundary )
 {
 	char line[AM_1K_BUFFER_SIZE+1];
@@ -294,7 +325,6 @@ static int AM_insert_qp_disclaimer_plain( FFGET_FILE *f, FILE *newf, struct AM_d
 	size_t qp_size;
 	char *qp_data = NULL;
 	char *normalized = NULL;
-	int normalized_alloc = 0;
 
 	while (FFGET_fgets(line, sizeof(line), f)) {
 		size_t len = strlen(line);
@@ -357,19 +387,18 @@ static int AM_insert_qp_disclaimer_plain( FFGET_FILE *f, FILE *newf, struct AM_d
 		else snprintf(combined, total_size, "%s%s", body, disc);
 	}
 
-	normalized = AM_adapt_linebreak(combined, "\r\n");
+	normalized = AM_normalize_crlf(combined);
 	if (normalized == NULL) {
 		free(combined);
 		if (disc_alloc) free(disc);
 		free(body);
 		return -1;
 	}
-	normalized_alloc = (normalized != combined);
 
 	qp_size = strlen(normalized) * 3 + 3;
 	qp_data = malloc(qp_size);
 	if (qp_data == NULL) {
-		if (normalized_alloc) free(normalized);
+		free(normalized);
 		free(combined);
 		if (disc_alloc) free(disc);
 		free(body);
@@ -383,7 +412,7 @@ static int AM_insert_qp_disclaimer_plain( FFGET_FILE *f, FILE *newf, struct AM_d
 	if (boundary_hit) fprintf(newf, "%s", boundary_line);
 
 	free(qp_data);
-	if (normalized_alloc) free(normalized);
+	free(normalized);
 	free(combined);
 	if (disc_alloc) free(disc);
 	free(body);
